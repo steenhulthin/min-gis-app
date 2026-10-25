@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="da">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Natur og fugle i København</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css">
+<script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
+<style>
+  html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; }
+  #kort { position: fixed; inset: 0; height: 100dvh; }
+  #titel { position: fixed; top: 0; left: 0; right: 0; z-index: 2; margin: 0; padding: 8px 12px;
+           font-size: 1.1rem; background: rgba(255,255,255,.92); box-shadow: 0 1px 4px rgba(0,0,0,.2); }
+  #besked { position: fixed; top: 48px; left: 12px; right: 12px; z-index: 2; display: none;
+            padding: 8px 12px; background: #fff3cd; border-radius: 6px; }
+  .maplibregl-popup-content { max-width: min(300px, 85vw); max-height: 50dvh; overflow: auto; }
+  .popup-titel { font-weight: 600; margin: 0 0 6px; }
+  .popup-link { display: inline-flex; align-items: center; min-height: 44px; }
+  #forklaring { position: fixed; left: 12px; bottom: 12px; z-index: 2; padding: 8px 12px;
+                background: rgba(255,255,255,.92); border-radius: 6px; font-size: .9rem; }
+  #forklaring div { display: flex; align-items: center; gap: 8px; min-height: 28px; }
+  #forklaring span { width: 14px; height: 14px; border-radius: 3px; display: inline-block; }
+</style>
+</head>
+<body>
+<h1 id="titel">Natur og fugle i København</h1>
+<div id="besked" role="status"></div>
+<div id="kort"></div>
+<div id="forklaring">
+  <div><span style="background:#2e7d32"></span>Fuglebeskyttelsesområder</div>
+  <div><span style="background:#1565c0"></span>§ 3-beskyttede søer</div>
+  <div><span style="background:#555; height:2px; margin-top:6px"></span>Københavns kommunegrænse</div>
+</div>
+<script>
+const kort = new maplibregl.Map({
+  container: 'kort',
+  style: 'https://tiles.openfreemap.org/styles/positron',
+  bounds: [[12.43, 55.59], [12.70, 55.74]], // [[vest, syd], [øst, nord]] for København
+  attributionControl: false
+});
+kort.addControl(new maplibregl.AttributionControl({
+  compact: false, // kreditering skal altid være synlig
+  customAttribution: ['Danmarks Miljøportal', 'Indeholder data fra Klimadatastyrelsen, DAGI, 25. oktober 2026']
+}));
+kort.addControl(new maplibregl.NavigationControl(), 'bottom-right');
+
+function visBesked(tekst) {
+  const el = document.getElementById('besked');
+  el.textContent = tekst;
+  el.style.display = 'block';
+}
+
+function skjulBesked() {
+  document.getElementById('besked').style.display = 'none';
+}
+
+// læs: hvordan svaret læses (standard JSON); valg: fx { method: 'POST', body } til Overpass
+async function hentData(navn, url, læs = svar => svar.json(), valg) {
+  try {
+    const svar = await fetch(url, valg);
+    if (!svar.ok) throw new Error(navn + ' svarede ' + svar.status);
+    return await læs(svar);
+  } catch (fejl) {
+    console.error(fejl);
+    visBesked('Kunne ikke hente data fra ' + navn + '. Prøv at genindlæse siden.');
+    return null;
+  }
+}
+
+// Navnefelter i Miljøportalens lag (første der findes bruges)
+const navnefelter = ['Fugle_navn', 'Omr_navn', 'Natyp_navn', 'Fred_navn', 'Navn'];
+
+function visPopup(e, linkTekst) {
+  const p = e.features[0].properties;
+  const navn = navnefelter.map(f => p[f]).find(v => v) || 'Uden navn';
+
+  const indhold = document.createElement('div');
+  const titel = document.createElement('p');
+  titel.className = 'popup-titel';
+  titel.textContent = navn;
+  indhold.appendChild(titel);
+
+  if (p.Link) {
+    const a = document.createElement('a');
+    a.href = p.Link;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    a.className = 'popup-link';
+    a.textContent = 'Læs mere på Miljøportalen';
+    indhold.appendChild(a);
+  }
+
+  new maplibregl.Popup()
+    .setLngLat(e.lngLat)
+    .setDOMContent(indhold)
+    .addTo(kort);
+}
+
+kort.on('load', async () => {
+  visBesked('Indlæser data …');
+
+  const bbox = '12.43,55.59,12.70,55.74,CRS:84';
+  const grund = 'https://arealeditering-dist-geo.miljoeportal.dk/geoserver/ows?service=WFS&version=2.0.0&request=GetFeature&outputFormat=application/json&srsName=EPSG:4326';
+
+  const lag = [
+    {
+      id: 'fugle',
+      navn: 'Fuglebeskyttelsesområder',
+      url: grund + '&typeNames=dai:fugle_bes_omr&bbox=' + bbox + '&count=2000',
+      farve: '#2e7d32'
+    },
+    {
+      id: 'soer',
+      navn: '§ 3-beskyttede søer',
+      url: grund + '&typeNames=dai:bes_naturtyper&count=2000&cql_filter='
+        + encodeURIComponent("Natyp_navn='Sø' AND BBOX(Shape,12.43,55.59,12.70,55.74,'CRS:84')"),
+      farve: '#1565c0'
+    }
+  ];
+
+  // Kommunegrænsen for København fra den statiske kommunefil (lægges under de andre lag)
+  const kommuner = await hentData(
+    'kommunegrænser',
+    'https://steenhulthin.github.io/byg-din-egen-gis-applikation/data/kommuneinddeling.geojson'
+  );
+  if (kommuner && kommuner.features) {
+    const kbh = { type: 'FeatureCollection', features: kommuner.features.filter(f => f.properties.navn === 'København') };
+    kort.addSource('kommune', { type: 'geojson', data: kbh });
+    kort.addLayer({
+      id: 'kommune-kant', type: 'line', source: 'kommune',
+      paint: { 'line-color': '#555', 'line-width': 2 }
+    });
+  }
+
+  for (const l of lag) {
+    const data = await hentData(l.navn, l.url);
+    if (!data || !data.features) continue;
+
+    kort.addSource(l.id, { type: 'geojson', data: data });
+    kort.addLayer({
+      id: l.id + '-flade', type: 'fill', source: l.id,
+      paint: { 'fill-color': l.farve, 'fill-opacity': 0.35 }
+    });
+    kort.addLayer({
+      id: l.id + '-kant', type: 'line', source: l.id,
+      paint: { 'line-color': l.farve, 'line-width': 1.5 }
+    });
+
+    kort.on('click', l.id + '-flade', e => visPopup(e));
+    kort.on('mouseenter', l.id + '-flade', () => kort.getCanvas().style.cursor = 'pointer');
+    kort.on('mouseleave', l.id + '-flade', () => kort.getCanvas().style.cursor = '');
+  }
+
+  skjulBesked();
+});
+</script>
+</body>
+</html>
